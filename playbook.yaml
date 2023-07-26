@@ -1,0 +1,98 @@
+---
+- name: Update and reboot cluster nodes
+  hosts: localhost
+  gather_facts: no
+  tasks:
+    - name: Retrieve list of cluster nodes
+      ansible.builtin.ec2_instance_info:
+        filters:
+          "tag:System Type": "Cluster Node"
+          "tag:vaec:Environment": "Development"
+          instance-state-name: "running"
+        region: "us-east-1"
+      register: cluster_nodes
+      vars:
+        ansible_python_interpreter: /usr/bin/python3
+
+    - name: Print cluster nodes 
+      debug:
+        msg: 
+        - "Number of cluster nodes: {{ cluster_nodes.instances | length }}"
+
+    - name: Add cluster nodes to inventory
+      ansible.builtin.add_host:
+        hostname: "{{ item.public_ip_address }}"
+        groups: cluster
+      loop: "{{ cluster_nodes.instances }}"
+
+- name: Perform update, reboot, and validation on cluster nodes
+  hosts: cluster
+  serial: 1
+  gather_facts: no
+  become: yes
+  tasks:
+
+    # - name: DNF/YUM Update
+    #   ansible.builtin.yum:
+    #     name: "*"
+    #     state: latest
+
+    - name: DNF/YUM Update
+      ansible.builtin.dnf:
+        name: "*"
+        state: latest
+
+    - name: Reboot node "{{ inventory_hostname }}"
+      ansible.builtin.reboot:
+        reboot_timeout: 1800
+
+    - name: Wait for APACHE services to start
+      ansible.builtin.service:
+        name: "{{ item }}"
+        state: started
+      loop:
+        - httpd
+
+    - name: Perform endpoint healthcheck
+      ansible.builtin.uri:
+        url: "http://127.0.0.1:80"
+        status_code: 200
+        method: GET
+        validate_certs: no
+        return_content: yes
+      register: healthcheck_result
+      failed_when: "'It works!' not in healthcheck_result.content"
+
+    # - name: Check status of ruxitdb
+    #   ansible.builtin.command: /opt/dynatrace-managed/utils/cassandra-nodetool.sh status
+
+    # - name: Wait for Dynatrace services to start
+    #   ansible.builtin.service:
+    #     name: "{{ item }}"
+    #     state: started
+    #   loop:
+    #     - Dynatrace-firewall.service
+    #     - Dynatrace-Nodekeeper.service
+    #     - Dynatrace-Cassandra.service
+    #     - Dynatrace-Elasticsearch.service
+    #     - Dynatrace-server.service
+    #     - Dynatrace-Security-gateway.service
+    #     - Dynatrace-Nginx.service
+
+    # - name: Perform endpoint healthcheck
+    #   ansible.builtin.uri:
+    #     url: "https://127.0.0.1:8022/rest/health"
+    #     status_code: 200
+    #     method: GET
+    #     validate_certs: no
+    #     return_content: yes
+    #   register: healthcheck_result
+    #   failed_when: "'RUNNING' not in healthcheck_result.content or 'RUNNING_FORSAKEN' not in healthcheck_result.content"
+
+    - name: Display completed successfully
+      ansible.builtin.debug:
+        msg: "Node {{ inventory_hostname }} completed successfully."
+
+    - name: Prompt user to move to the next node
+      ansible.builtin.pause:
+        prompt: "Press ENTER to continue with the next node or Ctrl+C to abort."
